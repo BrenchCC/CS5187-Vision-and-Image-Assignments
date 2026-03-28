@@ -1,91 +1,126 @@
-# 课程项目1: 图像特征匹配与异常值剔除
+# CS5187 Course Project 1
 
-## 项目概述
-本项目实现了图像特征匹配的完整流程，包括Harris角点检测、特征描述、特征匹配和RANSAC异常值剔除。
+## Image Feature Matching and Outlier Rejection
 
-## 功能特性
-- **Harris角点检测**: 计算图像梯度、结构张量矩阵、高斯窗口和局部最大值检测
-- **特征描述符**: 简化版SIFT描述符，具有旋转和尺度不变性
-- **特征匹配**: 平方差和(SSD)匹配，配合Lowe比率测试
-- **异常值剔除**: RANSAC算法，支持单应性和仿射变换
+This project implements a complete classical feature matching pipeline from scratch for robust image correspondence under real-world challenges. The system includes Harris corner detection, local descriptor extraction, descriptor matching with Lowe's ratio test, and RANSAC-based outlier rejection. It was built for the CS5187 vision assignment on feature detection and matching in challenging scenes.
 
-## 文件结构
-```
+## Project Goals
+- implement Harris corner detection from scratch
+- design a simplified invariant local descriptor
+- match descriptors using SSD and Lowe's ratio test
+- reject outliers with RANSAC and estimate geometric transformation
+- evaluate the pipeline on multiple challenging image-pair scenarios
+
+## Implemented Pipeline
+The pipeline contains the following stages:
+
+1. Read and preprocess input images as grayscale images
+2. Compute image gradients with Sobel filters
+3. Detect Harris corners using the structure tensor and local maxima
+4. Extract simplified SIFT-style descriptors from local patches
+5. Match descriptors with SSD and Lowe's ratio filtering
+6. Estimate a homography with RANSAC
+7. Save a side-by-side visualization with inlier match lines
+
+## Repository Structure
+```text
 course_project_1/
+├── data/                       # Downloaded and converted images
+├── docs/                       # Assignment description and notes
+├── results/                    # Generated matching result images
 ├── src/
-│   ├── __init__.py
-│   ├── harris.py          # Harris角点检测
-│   ├── descriptors.py    # 特征描述符
-│   ├── matching.py       # 特征匹配
-│   ├── ransac.py         # RANSAC算法
-│   └── main.py           # 主程序
-├── data/                 # 测试图像数据 (需要创建)
-└── requirements.txt      # 依赖包
+│   ├── main.py                 # Main pipeline entry point
+│   ├── harris.py               # Harris corner detector
+│   ├── descriptors.py          # Local descriptor extraction
+│   ├── matching.py             # SSD matching + ratio test
+│   ├── ransac.py               # RANSAC geometric verification
+│   ├── convert_dataset_images.py
+│   └── utils/
+│       ├── convolution.py
+│       └── image_utils.py
+├── submission/                 # Organized deliverables
+├── prepare_submission.sh       # Prepare submission assets
+├── run_batch_pipeline.sh       # Batch reproduction script
+├── requirements.txt
+└── README.md
 ```
 
-## 安装依赖
+## Installation
+Install the required dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-## 使用方法
+## Dataset Preparation
+Some downloaded benchmark images are stored as `ppm` or `pgm`. Convert them to `png` before running experiments:
 
-### 运行主程序
 ```bash
 cd src
-python main.py <图像1路径> <图像2路径> [可选参数]
+python convert_dataset_images.py --input-dir ../data --output-dir ../data/converted
 ```
 
-### 可选参数
-- `--sigma`: 高斯平滑参数 (默认: 1.0)
-- `--k`: Harris响应函数常数 (默认: 0.04)
-- `--threshold`: 角点检测阈值 (默认: 0.01)
-- `--ratio-threshold`: Lowe比率阈值 (默认: 0.75)
-- `--ransac-iterations`: RANSAC迭代次数 (默认: 1000)
-- `--ransac-threshold`: RANSAC内点阈值 (默认: 5.0)
-- `--transform`: 变换类型 (homography 或 affine, 默认: homography)
+The project also copies converted images into the original scenario folders for easier use.
 
-### 示例
+## Run a Single Image Pair
+Run the pipeline on one image pair:
+
 ```bash
-python main.py ../data/image1.jpg ../data/image2.jpg
-python main.py ../data/img1.png ../data/img2.png --transform affine --sigma 1.5
+cd src
+python main.py <image1_path> <image2_path> [optional_arguments]
 ```
 
-## 模块说明
+Example:
 
-### harris.py
-```python
-from harris import get_harris_corners
-corners, response = get_harris_corners(image, sigma=1.0, k=0.04, threshold=0.01)
+```bash
+cd src
+python main.py ../data/blur_bikes/img1.png ../data/blur_bikes/img4.png --output ../results/blur_bikes_matches.png --no-display
 ```
 
-### descriptors.py
-```python
-from descriptors import get_descriptors
-descriptors = get_descriptors(image, corners, sigma=1.0)
+## Main Arguments
+- `--sigma`: Gaussian smoothing parameter, default `1.0`
+- `--k`: Harris response constant, default `0.04`
+- `--threshold`: corner detection threshold, default `0.01`
+- `--ratio-threshold`: Lowe ratio threshold, default `0.75`
+- `--ransac-iterations`: number of RANSAC iterations, default `1000`
+- `--ransac-threshold`: inlier threshold in pixels, default `5.0`
+- `--transform`: `homography` or `affine`
+- `--output`: output path for the visualization image
+- `--no-display`: disable interactive plotting
+
+## Batch Reproduction
+Run all prepared scenarios at once:
+
+```bash
+./run_batch_pipeline.sh
 ```
 
-### matching.py
-```python
-from matching import match_features
-matches = match_features(descriptors1, descriptors2, ratio_threshold=0.75)
-```
+This script runs the current selected scenarios and writes result images into `results/`.
 
-### ransac.py
-```python
-from ransac import ransac
-transform, inlier_matches, inlier_mask = ransac(
-    corners1, corners2, matches,
-    num_iterations=1000,
-    inlier_threshold=5.0,
-    transform_type='homography'
-)
-```
+## Selected Evaluation Scenarios
+The current project setup contains five evaluated scenarios:
+- blur / defocus
+- illumination change
+- perspective / viewpoint change
+- scale / zoom change
+- severe clutter
 
-## 输出结果
-- 角点检测数量
-- 描述符维度
-- 原始匹配数量
-- 内点匹配数量
-- 内点比例
-- 可视化匹配结果 (红色: 原始匹配, 绿色: 内点匹配)
+## Current Outputs
+Generated result images are stored in `results/`, for example:
+- `blur_bikes_matches.png`
+- `illumination_leuven_matches.png`
+- `perspective_graf_matches.png`
+- `scale_boat_matches.png`
+- `clutter_box_matches.png`
+
+## Submission Package
+The organized deliverables are stored in `submission/`, including:
+- `code/`
+- `input_images/`
+- `input_images.zip`
+- `output_images/`
+- `report/project_report.tex`
+- `report/project_report.pdf`
+
+## Notes
+The assignment text contains a requirement mismatch: one section asks to choose 5 scenarios out of 10, while the deliverables section mentions all 10 scenarios. The current project organization follows the explicit “choose 5 scenarios” instruction and prepares a consistent 5-scenario submission package.

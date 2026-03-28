@@ -1,235 +1,364 @@
 #!/usr/bin/env python3
 """
-Course Project 1: Image Feature Matching and Outlier Rejection
+Course Project 1: Image Feature Matching and Outlier Rejection.
 
-This program demonstrates the complete image feature matching pipeline:
-1. Reading and preprocessing input images
-2. Harris corner detection
-3. Feature descriptor extraction
-4. Feature matching
-5. RANSAC outlier rejection
-6. Result visualization
+This program runs the complete image feature matching pipeline:
+1. Read and preprocess input images
+2. Detect Harris corners
+3. Extract local descriptors
+4. Match descriptors
+5. Reject outliers with RANSAC
+6. Save or display the match visualization
 """
 
 import argparse
-import numpy as np
+import logging
+import os
+import sys
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from PIL import Image
+import numpy as np
+
+CURRENT_DIR = Path(__file__).resolve().parent
+sys.path.append(str(CURRENT_DIR))
+sys.path.append(os.getcwd())
+
+from descriptors import get_descriptors
+from harris import get_harris_corners
+from matching import match_features
+from ransac import ransac
+from utils.image_utils import load_and_preprocess_image
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args():
     """
-    Parse command line arguments
+    Parse command line arguments.
+
+    Parameters:
+        None
 
     Returns:
-        args (argparse.Namespace): Parsed arguments
+        args (argparse.Namespace): Parsed command line arguments.
     """
     parser = argparse.ArgumentParser(
-        description='Image Feature Matching and Outlier Rejection'
+        description = "Image Feature Matching and Outlier Rejection"
     )
 
     parser.add_argument(
-        'image1',
-        help='Path to the first image'
+        "image1",
+        help = "Path to the first image"
     )
-
     parser.add_argument(
-        'image2',
-        help='Path to the second image'
+        "image2",
+        help = "Path to the second image"
     )
-
     parser.add_argument(
-        '--sigma',
-        type=float,
-        default=1.0,
-        help='Gaussian smoothing parameter (default: 1.0)'
+        "--sigma",
+        type = float,
+        default = 1.0,
+        help = "Gaussian smoothing parameter"
     )
-
     parser.add_argument(
-        '--k',
-        type=float,
-        default=0.04,
-        help='Harris response function constant (default: 0.04)'
+        "--k",
+        type = float,
+        default = 0.04,
+        help = "Harris response constant"
     )
-
     parser.add_argument(
-        '--threshold',
-        type=float,
-        default=0.01,
-        help='Corner detection threshold (default: 0.01)'
+        "--threshold",
+        type = float,
+        default = 0.01,
+        help = "Corner detection threshold"
     )
-
     parser.add_argument(
-        '--ratio-threshold',
-        type=float,
-        default=0.75,
-        help='Lowe ratio threshold (default: 0.75)'
+        "--ratio-threshold",
+        type = float,
+        default = 0.75,
+        help = "Lowe ratio threshold"
     )
-
     parser.add_argument(
-        '--ransac-iterations',
-        type=int,
-        default=1000,
-        help='RANSAC iterations (default: 1000)'
+        "--ransac-iterations",
+        type = int,
+        default = 1000,
+        help = "Number of RANSAC iterations"
     )
-
     parser.add_argument(
-        '--ransac-threshold',
-        type=float,
-        default=5.0,
-        help='RANSAC inlier threshold (pixels, default: 5.0)'
+        "--ransac-threshold",
+        type = float,
+        default = 5.0,
+        help = "RANSAC inlier threshold in pixels"
     )
-
     parser.add_argument(
-        '--transform',
-        choices=['homography', 'affine'],
-        default='homography',
-        help='Transform type (homography or affine, default: homography)'
+        "--transform",
+        choices = ["homography", "affine"],
+        default = "homography",
+        help = "Transformation model used by RANSAC"
+    )
+    parser.add_argument(
+        "--output",
+        type = str,
+        default = "",
+        help = "Optional output image path for the match visualization"
+    )
+    parser.add_argument(
+        "--no-display",
+        action = "store_true",
+        help = "Disable interactive display and only save output"
     )
 
     return parser.parse_args()
 
 
-def load_and_preprocess_image(image_path):
+def create_combined_image(image1, image2):
     """
-    Load and preprocess an image
+    Create a side-by-side visualization canvas.
 
     Parameters:
-        image_path (str): Path to the image file
+        image1 (np.ndarray): First grayscale image.
+        image2 (np.ndarray): Second grayscale image.
 
     Returns:
-        image_gray (np.ndarray): Grayscale image
+        combined (np.ndarray): Combined visualization image.
+        image1_width (int): Width of the first image.
     """
-    image = Image.open(image_path)
-    image_gray = np.array(image.convert('L'))
-    return image_gray
+    image1_height, image1_width = image1.shape
+    image2_height, image2_width = image2.shape
+
+    combined = np.zeros(
+        (
+            max(image1_height, image2_height),
+            image1_width + image2_width
+        ),
+        dtype = np.uint8
+    )
+    combined[:image1_height, :image1_width] = image1
+    combined[:image2_height, image1_width:image1_width + image2_width] = image2
+
+    return combined, image1_width
 
 
-def visualize_results(image1, image2, corners1, corners2, matches, inlier_matches):
+def save_matching_visualization(
+    image1,
+    image2,
+    corners1,
+    corners2,
+    matches,
+    inlier_matches,
+    output_path = "",
+    show_plot = True
+):
     """
-    Visualize matching results
+    Save or display the feature matching visualization.
 
     Parameters:
-        image1 (np.ndarray): First image
-        image2 (np.ndarray): Second image
-        corners1 (np.ndarray): Corners from image1
-        corners2 (np.ndarray): Corners from image2
-        matches (np.ndarray): All matches
-        inlier_matches (np.ndarray): Inlier matches
+        image1 (np.ndarray): First grayscale image.
+        image2 (np.ndarray): Second grayscale image.
+        corners1 (np.ndarray): Corner coordinates from image 1.
+        corners2 (np.ndarray): Corner coordinates from image 2.
+        matches (np.ndarray): All matched feature pairs.
+        inlier_matches (np.ndarray): Inlier matched feature pairs.
+        output_path (str): Output image path.
+        show_plot (bool): Whether to display the figure interactively.
+
+    Returns:
+        None
     """
-    # Create combined image
-    h1, w1 = image1.shape
-    h2, w2 = image2.shape
-    combined = np.zeros((max(h1, h2), w1 + w2), dtype=np.uint8)
-    combined[:h1, :w1] = image1
-    combined[:h2, w1:w1+w2] = image2
+    combined, image1_width = create_combined_image(image1, image2)
 
-    plt.figure(figsize=(15, 8))
-    plt.imshow(combined, cmap='gray')
+    figure = plt.figure(figsize = (15, 8))
+    plt.imshow(combined, cmap = "gray")
 
-    # Draw all matches (red)
-    for i, j in matches:
-        x1, y1 = corners1[i][1], corners1[i][0]
-        x2, y2 = corners2[j][1] + w1, corners2[j][0]
-        plt.plot([x1, x2], [y1, y2], 'r-', linewidth=0.5, alpha=0.3)
+    for index1, index2 in matches:
+        x1, y1 = corners1[index1][1], corners1[index1][0]
+        x2, y2 = corners2[index2][1] + image1_width, corners2[index2][0]
+        plt.plot([x1, x2], [y1, y2], "r-", linewidth = 0.5, alpha = 0.25)
 
-    # Draw inlier matches (green)
-    for i, j in inlier_matches:
-        x1, y1 = corners1[i][1], corners1[i][0]
-        x2, y2 = corners2[j][1] + w1, corners2[j][0]
-        plt.plot([x1, x2], [y1, y2], 'g-', linewidth=1, alpha=0.7)
+    for index1, index2 in inlier_matches:
+        x1, y1 = corners1[index1][1], corners1[index1][0]
+        x2, y2 = corners2[index2][1] + image1_width, corners2[index2][0]
+        plt.plot([x1, x2], [y1, y2], "g-", linewidth = 1.0, alpha = 0.85)
 
-    # Draw corners
-    plt.scatter(
-        [p[1] for p in corners1],
-        [p[0] for p in corners1],
-        c='b', s=20, alpha=0.5, label='Image1 corners'
+    if len(corners1) > 0:
+        plt.scatter(
+            corners1[:, 1],
+            corners1[:, 0],
+            c = "b",
+            s = 15,
+            alpha = 0.45,
+            label = "Image 1 corners"
+        )
+
+    if len(corners2) > 0:
+        plt.scatter(
+            corners2[:, 1] + image1_width,
+            corners2[:, 0],
+            c = "orange",
+            s = 15,
+            alpha = 0.45,
+            label = "Image 2 corners"
+        )
+
+    plt.title(
+        f"Feature Matching Results: {len(matches)} total matches, "
+        f"{len(inlier_matches)} inliers"
     )
-    plt.scatter(
-        [p[1] + w1 for p in corners2],
-        [p[0] for p in corners2],
-        c='orange', s=20, alpha=0.5, label='Image2 corners'
-    )
-
-    plt.title(f'Feature Matching Results: {len(matches)} total matches, {len(inlier_matches)} inliers')
-    plt.legend(loc='upper right')
-    plt.axis('off')
+    plt.legend(loc = "upper right")
+    plt.axis("off")
     plt.tight_layout()
-    plt.show()
+
+    if output_path:
+        output_file = Path(output_path).resolve()
+        output_file.parent.mkdir(parents = True, exist_ok = True)
+        figure.savefig(output_file, dpi = 200, bbox_inches = "tight")
+        logger.info("Saved visualization to %s", output_file)
+
+    if show_plot:
+        plt.show()
+
+    plt.close(figure)
 
 
-def main():
+def run_pipeline(args):
     """
-    Main program
+    Run the full image matching pipeline.
+
+    Parameters:
+        args (argparse.Namespace): Parsed command line arguments.
+
+    Returns:
+        summary (dict): Pipeline result summary.
     """
-    args = parse_args()
+    logger.info("=" * 80)
+    logger.info("Image feature matching pipeline started")
+    logger.info("=" * 80)
+    logger.info("Image 1: %s", args.image1)
+    logger.info("Image 2: %s", args.image2)
 
-    print("=" * 80)
-    print("Image Feature Matching Program")
-    print("=" * 80)
+    image1 = load_and_preprocess_image(args.image1)
+    image2 = load_and_preprocess_image(args.image2)
 
-    try:
-        # Load images
-        print("Loading images...")
-        image1 = load_and_preprocess_image(args.image1)
-        image2 = load_and_preprocess_image(args.image2)
-        print(f"Image1 size: {image1.shape}")
-        print(f"Image2 size: {image2.shape}")
+    logger.info("Image 1 shape: %s", image1.shape)
+    logger.info("Image 2 shape: %s", image2.shape)
 
-        # Import modules
-        from harris import get_harris_corners
-        from descriptors import get_descriptors
-        from matching import match_features
-        from ransac import ransac
+    logger.info("-" * 60)
+    logger.info("Detecting Harris corners")
+    logger.info("-" * 60)
+    corners1, _ = get_harris_corners(image1, args.sigma, args.k, args.threshold)
+    corners2, _ = get_harris_corners(image2, args.sigma, args.k, args.threshold)
+    logger.info("Detected %d corners in image 1", len(corners1))
+    logger.info("Detected %d corners in image 2", len(corners2))
 
-        # Stage 1: Detect Harris corners
-        print("\n" + "-" * 60)
-        print("Detecting Harris corners...")
-        corners1, response1 = get_harris_corners(image1, args.sigma, args.k, args.threshold)
-        corners2, response2 = get_harris_corners(image2, args.sigma, args.k, args.threshold)
-        print(f"Image1 detected {len(corners1)} corners")
-        print(f"Image2 detected {len(corners2)} corners")
+    logger.info("-" * 60)
+    logger.info("Extracting descriptors")
+    logger.info("-" * 60)
+    descriptors1 = get_descriptors(image1, corners1, args.sigma)
+    descriptors2 = get_descriptors(image2, corners2, args.sigma)
 
-        # Stage 2: Extract descriptors
-        print("\n" + "-" * 60)
-        print("Extracting feature descriptors...")
-        descriptors1 = get_descriptors(image1, corners1, args.sigma)
-        descriptors2 = get_descriptors(image2, corners2, args.sigma)
-        print(f"Descriptor dimension: {descriptors1.shape[1]}")
+    if len(descriptors1) == 0 or len(descriptors2) == 0:
+        raise RuntimeError("Descriptor extraction returned an empty result.")
 
-        # Stage 3: Match features
-        print("\n" + "-" * 60)
-        print("Matching features...")
-        matches = match_features(descriptors1, descriptors2, args.ratio_threshold)
-        print(f"Raw matches: {len(matches)}")
+    logger.info("Descriptor dimension: %d", descriptors1.shape[1])
 
-        # Stage 4: RANSAC outlier rejection
-        print("\n" + "-" * 60)
-        print("RANSAC outlier rejection...")
-        transform, inlier_matches, inlier_mask = ransac(
-            corners1, corners2, matches,
+    logger.info("-" * 60)
+    logger.info("Matching descriptors")
+    logger.info("-" * 60)
+    matches = match_features(descriptors1, descriptors2, args.ratio_threshold)
+    if matches.size == 0:
+        matches = np.empty((0, 2), dtype = int)
+    logger.info("Raw matches: %d", len(matches))
+
+    required_matches = 4 if args.transform == "homography" else 3
+    inlier_matches = np.empty((0, 2), dtype = int)
+    transform = None
+
+    logger.info("-" * 60)
+    logger.info("Running RANSAC")
+    logger.info("-" * 60)
+    if len(matches) >= required_matches:
+        transform, inlier_matches, _ = ransac(
+            corners1,
+            corners2,
+            matches,
             args.ransac_iterations,
             args.ransac_threshold,
             args.transform
         )
+        if inlier_matches.size == 0:
+            inlier_matches = np.empty((0, 2), dtype = int)
+    else:
+        logger.warning(
+            "Skipped RANSAC because %d matches are fewer than the %d required "
+            "for %s.",
+            len(matches),
+            required_matches,
+            args.transform
+        )
 
-        print(f"Inlier matches: {len(inlier_matches)}")
-        print(f"Inlier ratio: {len(inlier_matches)/len(matches):.2%}")
+    inlier_ratio = 0.0
+    if len(matches) > 0:
+        inlier_ratio = len(inlier_matches) / len(matches)
 
-        # Visualize results
-        print("\n" + "-" * 60)
-        print("Visualizing results...")
-        visualize_results(image1, image2, corners1, corners2, matches, inlier_matches)
+    logger.info("Inlier matches: %d", len(inlier_matches))
+    logger.info("Inlier ratio: %.2f%%", inlier_ratio * 100.0)
 
-        print("\n" + "*" * 50)
-        print("Program execution completed")
-        print("*" * 50)
+    logger.info("-" * 60)
+    logger.info("Rendering visualization")
+    logger.info("-" * 60)
+    save_matching_visualization(
+        image1 = image1,
+        image2 = image2,
+        corners1 = corners1,
+        corners2 = corners2,
+        matches = matches,
+        inlier_matches = inlier_matches,
+        output_path = args.output,
+        show_plot = not args.no_display
+    )
 
-    except Exception as e:
-        print(f"\nError: {e}")
-        import traceback
-        print(traceback.format_exc())
+    logger.info("*" * 50)
+    logger.info("Pipeline completed")
+    logger.info("*" * 50)
+
+    return {
+        "transform": transform,
+        "corners1": len(corners1),
+        "corners2": len(corners2),
+        "matches": len(matches),
+        "inliers": len(inlier_matches),
+        "inlier_ratio": inlier_ratio
+    }
+
+
+def main():
+    """
+    Entry point of the program.
+
+    Parameters:
+        None
+
+    Returns:
+        int: Process exit code.
+    """
+    args = parse_args()
+
+    try:
+        run_pipeline(args)
+        return 0
+    except Exception as error:
+        logger.exception("Pipeline failed: %s", error)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(
+        level = logging.INFO,
+        format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers = [logging.StreamHandler()]
+    )
+    raise SystemExit(main())
